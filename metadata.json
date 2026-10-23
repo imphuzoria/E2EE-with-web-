@@ -1,0 +1,6 @@
+{
+  "name": "CipherHaven - Secure E2EE Messenger",
+  "description": "Сверхзащищённый веб-мессенджер для ПК со сквозным шифрованием (E2EE AES-256-GCM & ECDH), обменом зашифрованными файлами, голосовыми заметками и нулевым знанием сервера.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

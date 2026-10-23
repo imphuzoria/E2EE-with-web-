@@ -1,11 +1,16 @@
 /**
- * CipherHaven Cryptographic Primitives
+ * SecureMessenger Cryptographic Primitives
  * Industrial-strength Web Crypto API implementation:
  * - AES-256-GCM (Authenticated Encryption with Associated Data)
- * - PBKDF2-HMAC-SHA256 (100,000 iterations for password-based key derivation)
+ * - PBKDF2-HMAC-SHA256 (210,000 iterations, per-room salt)
  * - ECDH (NIST P-256 Elliptic Curve Diffie-Hellman key agreement)
  * - SHA-256 Safety Fingerprints & Verification Codes
+ *
+ * All operations run in the browser. The server never sees keys or plaintext.
  */
+
+export const PBKDF2_ITERATIONS = 210000;
+export const KDF_SALT_VERSION = 'SecureMessenger|v1|salt|';
 
 export interface EncryptedPayload {
   ciphertext: string; // Base64 ciphertext + 128-bit GCM auth tag
@@ -17,13 +22,16 @@ export interface KeyPairExport {
   publicKeyBase64: string;
 }
 
-// Convert ArrayBuffer to Base64
+// Convert ArrayBuffer to Base64 (chunked to avoid call-stack overflows on large buffers)
 export function arrayBufferToBase64(buffer: ArrayBuffer | Uint8Array): string {
   const bytes = buffer instanceof Uint8Array ? buffer : new Uint8Array(buffer);
+  const chunkSize = 0x8000;
   let binary = '';
-  const len = bytes.byteLength;
-  for (let i = 0; i < len; i++) {
-    binary += String.fromCharCode(bytes[i]);
+  for (let i = 0; i < bytes.length; i += chunkSize) {
+    binary += String.fromCharCode.apply(
+      null,
+      Array.from(bytes.subarray(i, i + chunkSize)) as unknown as number[]
+    );
   }
   return window.btoa(binary);
 }
@@ -48,7 +56,7 @@ export function getRandomBytes(length: number): Uint8Array {
 export async function deriveKeyFromPassphrase(
   passphrase: string,
   salt: Uint8Array = new Uint8Array([73, 219, 102, 14, 88, 129, 44, 211, 95, 33, 18, 77, 240, 6, 182, 90]),
-  iterations = 100000
+  iterations = PBKDF2_ITERATIONS
 ): Promise<CryptoKey> {
   const enc = new TextEncoder();
   const passwordKey = await window.crypto.subtle.importKey(
@@ -71,6 +79,28 @@ export async function deriveKeyFromPassphrase(
     false,
     ['encrypt', 'decrypt']
   );
+}
+
+/**
+ * Derive the room key.
+ *
+ * A unique, deterministic salt is derived from the room id, so every room has
+ * its own PBKDF2 salt while all members of the same room still derive the same
+ * key. This prevents precomputed (rainbow table) attacks that a single global
+ * hard-coded salt would allow.
+ */
+export async function deriveRoomKey(
+  passphrase: string,
+  roomId: string,
+  iterations = PBKDF2_ITERATIONS
+): Promise<CryptoKey> {
+  const enc = new TextEncoder();
+  const digest = await window.crypto.subtle.digest(
+    'SHA-256',
+    enc.encode(`${KDF_SALT_VERSION}${roomId}`)
+  );
+  const salt = new Uint8Array(digest).slice(0, 16);
+  return deriveKeyFromPassphrase(passphrase, salt, iterations);
 }
 
 // Encrypt plaintext string using AES-256-GCM with fresh 96-bit IV
@@ -242,4 +272,30 @@ export async function sha256Hex(data: string | ArrayBuffer): Promise<string> {
   return Array.from(bytes)
     .map((b) => b.toString(16).padStart(2, '0'))
     .join('');
+}
+
+// Generate a cryptographically secure, URL-safe identifier
+export function randomId(prefix = 'id'): string {
+  const bytes = getRandomBytes(12);
+  const hex = Array.from(bytes)
+    .map((b) => b.toString(16).padStart(2, '0'))
+    .join('');
+  return `${prefix}_${hex}`;
+}
+
+// Generate a strong random passphrase (no modulo bias)
+export function generatePassphrase(length = 32): string {
+  const alphabet =
+    'abcdefghijkmnopqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789!@#$%^&*-_=+';
+  const max = 256 - (256 % alphabet.length);
+  let out = '';
+  while (out.length < length) {
+    const bytes = getRandomBytes(length * 2);
+    for (let i = 0; i < bytes.length && out.length < length; i++) {
+      if (bytes[i] < max) {
+        out += alphabet[bytes[i] % alphabet.length];
+      }
+    }
+  }
+  return out;
 }

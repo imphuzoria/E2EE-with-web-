@@ -25,7 +25,8 @@ import { Peer, RoomConfig, ChatMessage } from '../types/chat';
 import {
   encryptText,
   decryptText,
-  deriveKeyFromPassphrase,
+  deriveRoomKey,
+  PBKDF2_ITERATIONS,
   calculateSafetyNumbers,
   sha256Hex,
 } from '../crypto/cipher';
@@ -94,7 +95,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   const runCryptoTest = async () => {
     try {
       setTamperError(null);
-      const key = await deriveKeyFromPassphrase(currentRoom?.passphrase || 'default-salt');
+      const key = await deriveRoomKey(currentRoom?.passphrase || 'default-salt', currentRoom?.id || 'sandbox');
       const { ciphertext, iv } = await encryptText(testPlaintext, key);
       setTestCiphertext(ciphertext);
       setTestIv(iv);
@@ -151,7 +152,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
       const tampered = (testCiphertext[0] === 'X' ? 'Y' : 'X') + testCiphertext.slice(1);
       setTestCiphertext(tampered);
 
-      const key = await deriveKeyFromPassphrase(currentRoom?.passphrase || 'default-salt');
+      const key = await deriveRoomKey(currentRoom?.passphrase || 'default-salt', currentRoom?.id || 'sandbox');
       await decryptText(tampered, testIv, key);
       setTestDecrypted('Не должно было расшифроваться');
     } catch (err) {
@@ -179,7 +180,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
         <div className="px-6 py-4 border-b border-[#23242a] flex items-center justify-between bg-[#101114]">
           <div className="flex items-center gap-3">
             <span className="font-mono font-bold text-sm text-white tracking-wider">
-              #### / настройки
+              SecureMessenger / настройки
             </span>
           </div>
           <button
@@ -259,7 +260,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                 <div className="p-3 bg-[#111111] border border-[#222222] rounded-lg">
                   <div className="text-[10px] text-neutral-400 font-mono uppercase mb-1">Деривация (KDF)</div>
                   <div className="text-sm font-mono font-bold text-neutral-100">PBKDF2-SHA256</div>
-                  <div className="text-[10px] text-neutral-400 font-mono mt-0.5">100 000 итераций</div>
+                  <div className="text-[10px] text-neutral-400 font-mono mt-0.5">{PBKDF2_ITERATIONS.toLocaleString('ru-RU')} итераций</div>
                 </div>
 
                 <div className="p-3 bg-[#111111] border border-[#222222] rounded-lg">
@@ -463,7 +464,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                     className="mt-2 px-4 py-2 bg-white text-black hover:bg-neutral-200 font-semibold text-xs rounded cursor-pointer transition-colors flex items-center gap-2"
                   >
                     <Download className="w-3.5 h-3.5" />
-                    <span>Установить #### на ПК</span>
+                    <span>Установить SecureMessenger на ПК</span>
                   </button>
                 )}
               </div>

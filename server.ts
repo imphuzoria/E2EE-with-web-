@@ -1,6 +1,7 @@
 import express, { Request, Response } from 'express';
 import { createServer as createViteServer } from 'vite';
 import path from 'path';
+import fs from 'fs';
 import { fileURLToPath } from 'url';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -8,8 +9,40 @@ const __dirname = path.dirname(__filename);
 
 const app = express();
 
+// Rate limiting middleware
+const rateLimit: Map<string, { count: number; resetAt: number }> = new Map();
+
+function rateLimitMiddleware(maxRequests: number, windowMs: number) {
+  return (req: Request, res: Response, next: Function) => {
+    const ip = req.ip || req.socket.remoteAddress || 'unknown';
+    const now = Date.now();
+    const record = rateLimit.get(ip);
+    
+    if (record && record.resetAt > now) {
+      if (record.count >= maxRequests) {
+        return res.status(429).json({ error: 'Too many requests' });
+      }
+      record.count++;
+    } else {
+      rateLimit.set(ip, { count: 1, resetAt: now + windowMs });
+    }
+    next();
+  };
+}
+
+// Clean up rate limit records every 5 minutes
+setInterval(() => {
+  const now = Date.now();
+  for (const [ip, record] of rateLimit.entries()) {
+    if (record.resetAt <= now) {
+      rateLimit.delete(ip);
+    }
+  }
+}, 300000);
+
 // Support large payload for encrypted files and binary buffers
-app.use(express.json({ limit: '100mb' }));
+app.use(express.json({ limit: '50mb' }));
+app.use(rateLimitMiddleware(100, 60000));
 
 // Memory storage for encrypted rooms
 // Notice: The server has ZERO KNOWLEDGE of message contents, file contents, or keys.
@@ -126,30 +159,48 @@ app.get('/api/health', (req: Request, res: Response) => {
 
 // Download native Windows .exe
 app.get('/api/download-exe', (req: Request, res: Response) => {
-  const exePath = path.resolve(__dirname, 'public', '####.exe');
+  const candidates = [
+    path.resolve(__dirname, 'release', 'SecureMessenger.exe'),
+    path.resolve(__dirname, 'public', 'SecureMessenger.exe'),
+  ];
+  const exePath = candidates.find((p) => fs.existsSync(p));
+  if (!exePath) {
+    return res.status(404).json({ error: 'EXE file not found. Build it with build.bat' });
+  }
   res.setHeader('Content-Type', 'application/x-msdownload');
-  res.setHeader('Content-Disposition', 'attachment; filename="####.exe"');
+  res.setHeader('Content-Disposition', 'attachment; filename="SecureMessenger.exe"');
   res.sendFile(exePath);
 });
 
 // Download launcher script
 app.get('/api/download-bat', (req: Request, res: Response) => {
   const batContent = `@echo off
-title #### Desktop
-echo Запуск локального мессенджера ####...
+title SecureMessenger Desktop
+echo Запуск локального защищенного мессенджера...
 start "" "http://localhost:3000"
 exit`;
   res.setHeader('Content-Type', 'application/x-bat');
-  res.setHeader('Content-Disposition', 'attachment; filename="####-launcher.bat"');
+  res.setHeader('Content-Disposition', 'attachment; filename="SecureMessenger-launcher.bat"');
   res.send(batContent);
 });
 
 // SSE Stream for Room events
 app.get('/api/rooms/:roomId/events', (req: Request, res: Response) => {
   const { roomId } = req.params;
+  
+  // Validate roomId to prevent injection
+  if (!roomId || !/^[a-zA-Z0-9\-_]+$/.test(roomId)) {
+    return res.status(400).json({ error: 'Invalid room ID' });
+  }
+
   const peerId = (req.query.peerId as string) || `peer_${Date.now()}`;
   const peerName = (req.query.peerName as string) || 'Anonymous Secure Node';
   const publicKey = (req.query.publicKey as string) || '';
+
+  // Validate lengths
+  if (peerId.length > 100 || peerName.length > 100) {
+    return res.status(400).json({ error: 'Invalid peer parameters' });
+  }
 
   res.setHeader('Content-Type', 'text/event-stream');
   res.setHeader('Cache-Control', 'no-cache, no-transform');
@@ -197,12 +248,26 @@ app.get('/api/rooms/:roomId/events', (req: Request, res: Response) => {
 });
 
 // Post an encrypted message (Server does not have keys to decrypt)
-app.post('/api/rooms/:roomId/messages', (req: Request, res: Response) => {
+app.post('/api/rooms/:roomId/messages', rateLimitMiddleware(60, 60000), (req: Request, res: Response) => {
   const { roomId } = req.params;
   const { id, senderId, senderName, senderPublicKey, iv, ciphertext, salt, type, fileMeta, expiresAt } = req.body;
 
+  // Validate roomId
+  if (!roomId || !/^[a-zA-Z0-9\-_]+$/.test(roomId)) {
+    return res.status(400).json({ error: 'Invalid room ID' });
+  }
+
   if (!ciphertext || !iv) {
     return res.status(400).json({ error: 'Missing ciphertext or iv in encrypted envelope' });
+  }
+
+  // Validate senderId and senderName lengths
+  if (!senderId || senderId.length > 100) {
+    return res.status(400).json({ error: 'Invalid sender ID' });
+  }
+
+  if (!senderName || senderName.length > 100) {
+    return res.status(400).json({ error: 'Invalid sender name' });
   }
 
   const room = getOrCreateRoom(roomId);
@@ -224,8 +289,8 @@ app.post('/api/rooms/:roomId/messages', (req: Request, res: Response) => {
 
   room.messages.push(message);
 
-  // Cap message buffer per room to 300 to manage memory in demo
-  if (room.messages.length > 300) {
+  // Cap message buffer per room to 500 to manage memory
+  if (room.messages.length > 500) {
     room.messages.shift();
   }
 
@@ -236,16 +301,26 @@ app.post('/api/rooms/:roomId/messages', (req: Request, res: Response) => {
 });
 
 // Upload Encrypted File (stored purely as encrypted bytes)
-app.post('/api/rooms/:roomId/files', express.raw({ type: '*/*', limit: '100mb' }), (req: Request, res: Response) => {
+app.post('/api/rooms/:roomId/files', rateLimitMiddleware(20, 60000), express.raw({ type: '*/*', limit: '50mb' }), (req: Request, res: Response) => {
   const { roomId } = req.params;
   const fileId = req.headers['x-file-id'] as string || `file_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
   const expiresAfterSec = parseInt(req.headers['x-expires-sec'] as string || '0', 10);
+
+  // Validate roomId to prevent path traversal
+  if (!roomId || !/^[a-zA-Z0-9\-_]+$/.test(roomId)) {
+    return res.status(400).json({ error: 'Invalid room ID' });
+  }
 
   if (!req.body || (Buffer.isBuffer(req.body) && req.body.length === 0)) {
     return res.status(400).json({ error: 'Empty file payload' });
   }
 
+  // Limit file size to 50MB
   const buffer = Buffer.isBuffer(req.body) ? req.body : Buffer.from(req.body);
+  if (buffer.length > 50 * 1024 * 1024) {
+    return res.status(413).json({ error: 'File too large' });
+  }
+
   const expiresAt = expiresAfterSec > 0 ? Date.now() + expiresAfterSec * 1000 : null;
 
   encryptedFiles.set(fileId, {
@@ -264,7 +339,17 @@ app.post('/api/rooms/:roomId/files', express.raw({ type: '*/*', limit: '100mb' }
 
 // Download Encrypted File by fileId
 app.get('/api/rooms/:roomId/files/:fileId', (req: Request, res: Response) => {
-  const { fileId } = req.params;
+  const { fileId, roomId } = req.params;
+  
+  // Validate params to prevent injection
+  if (!fileId || !/^[a-zA-Z0-9\-_]+$/.test(fileId)) {
+    return res.status(400).json({ error: 'Invalid file ID' });
+  }
+  
+  if (!roomId || !/^[a-zA-Z0-9\-_]+$/.test(roomId)) {
+    return res.status(400).json({ error: 'Invalid room ID' });
+  }
+
   const file = encryptedFiles.get(fileId);
 
   if (!file) {
@@ -274,20 +359,33 @@ app.get('/api/rooms/:roomId/files/:fileId', (req: Request, res: Response) => {
   res.setHeader('Content-Type', 'application/octet-stream');
   res.setHeader('Content-Length', file.buffer.length);
   res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, private');
+  res.setHeader('X-Content-Type-Options', 'nosniff');
   res.send(file.buffer);
 });
 
 // Signal typing or presence
-app.post('/api/rooms/:roomId/typing', (req: Request, res: Response) => {
+app.post('/api/rooms/:roomId/typing', rateLimitMiddleware(100, 60000), (req: Request, res: Response) => {
   const { roomId } = req.params;
+  
+  // Validate roomId
+  if (!roomId || !/^[a-zA-Z0-9\-_]+$/.test(roomId)) {
+    return res.status(400).json({ error: 'Invalid room ID' });
+  }
+
   const { peerId, peerName, isTyping } = req.body;
   broadcastToRoom(roomId, 'typing', { peerId, peerName, isTyping });
   res.json({ success: true });
 });
 
 // Clear room messages (remote wipe for the room)
-app.delete('/api/rooms/:roomId/messages', (req: Request, res: Response) => {
+app.delete('/api/rooms/:roomId/messages', rateLimitMiddleware(10, 60000), (req: Request, res: Response) => {
   const { roomId } = req.params;
+  
+  // Validate roomId
+  if (!roomId || !/^[a-zA-Z0-9\-_]+$/.test(roomId)) {
+    return res.status(400).json({ error: 'Invalid room ID' });
+  }
+
   const room = rooms.get(roomId);
   if (room) {
     room.messages = [];
@@ -298,6 +396,16 @@ app.delete('/api/rooms/:roomId/messages', (req: Request, res: Response) => {
 
 async function startServer() {
   const isProd = process.env.NODE_ENV === 'production';
+
+  // Security headers
+  app.use((req: Request, res: Response, next: Function) => {
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    res.setHeader('X-Frame-Options', 'DENY');
+    res.setHeader('X-XSS-Protection', '1; mode=block');
+    res.setHeader('Referrer-Policy', 'no-referrer');
+    res.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=()');
+    next();
+  });
 
   if (isProd) {
     app.use(express.static(path.resolve(__dirname, 'dist')));
@@ -314,11 +422,11 @@ async function startServer() {
 
   const PORT = Number(process.env.PORT) || 3000;
   app.listen(PORT, '0.0.0.0', () => {
-    console.log(`[CipherHaven] E2EE Zero-Knowledge Relay running at http://0.0.0.0:${PORT}`);
+    console.log(`[SecureMessenger] E2EE Zero-Knowledge Relay running at http://0.0.0.0:${PORT}`);
   });
 }
 
 startServer().catch((err) => {
-  console.error('[CipherHaven] Startup Error:', err);
+  console.error('[SecureMessenger] Startup Error:', err);
   process.exit(1);
 });

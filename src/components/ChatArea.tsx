@@ -145,7 +145,7 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
       <div className="flex-1 overflow-y-auto p-6 space-y-4">
         {messages.length === 0 ? (
           <div className="h-full flex flex-col items-center justify-center text-center p-8 max-w-sm mx-auto space-y-2 select-none font-mono">
-            <div className="text-neutral-300 font-bold text-sm tracking-wider">####</div>
+            <div className="text-neutral-300 font-bold text-sm tracking-wider">SecureMessenger</div>
             <p className="text-xs text-neutral-400 leading-relaxed font-sans">
               Канал пуст. Начните писать сообщение ниже.
             </p>

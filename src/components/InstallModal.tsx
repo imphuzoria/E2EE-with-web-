@@ -22,7 +22,7 @@ export const InstallModal: React.FC<InstallModalProps> = ({
         {/* Header */}
         <div className="px-6 py-4 border-b border-[#1E1E1E] flex items-center justify-between bg-[#000000]">
           <span className="font-mono font-bold text-sm text-white">
-            #### / запуск на пк
+            SecureMessenger / запуск на пк
           </span>
           <button
             onClick={onClose}
@@ -44,7 +44,7 @@ export const InstallModal: React.FC<InstallModalProps> = ({
               className="w-full py-2.5 px-4 bg-white text-black hover:bg-neutral-200 font-semibold rounded-md flex items-center justify-center gap-2 cursor-pointer transition-colors"
             >
               <Download className="w-4 h-4" />
-              <span>Установить #### на ПК</span>
+              <span>Установить SecureMessenger на ПК</span>
             </button>
           )}
 

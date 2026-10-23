@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { X, Hash, Key, Sparkles, ArrowRight } from 'lucide-react';
 import { RoomConfig } from '../types/chat';
+import { generatePassphrase, randomId } from '../crypto/cipher';
 
 interface NewRoomModalProps {
   isOpen: boolean;
@@ -21,18 +22,11 @@ export const NewRoomModal: React.FC<NewRoomModalProps> = ({
   if (!isOpen) return null;
 
   const generateStrongKey = () => {
-    const chars = 'abcdefghjkmnpqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789!@#$%^&*';
-    const array = new Uint8Array(24);
-    window.crypto.getRandomValues(array);
-    let key = '';
-    for (let i = 0; i < array.length; i++) {
-      key += chars[array[i] % chars.length];
-    }
-    setPassphrase(key);
+    setPassphrase(generatePassphrase(24));
   };
 
   const generateRandomRoomId = () => {
-    const id = 'room-' + Math.random().toString(36).substring(2, 8);
+    const id = 'room-' + randomId().slice(5, 11).replace(/_/g, '');
     setRoomId(id);
     if (!roomName) {
       setRoomName(id);
@@ -65,7 +59,7 @@ export const NewRoomModal: React.FC<NewRoomModalProps> = ({
         {/* Header */}
         <div className="px-6 py-4 border-b border-[#1E1E1E] flex items-center justify-between bg-[#000000]">
           <span className="font-mono font-bold text-sm text-white">
-            #### / создать или войти
+            SecureMessenger / создать или войти
           </span>
           <button
             onClick={onClose}

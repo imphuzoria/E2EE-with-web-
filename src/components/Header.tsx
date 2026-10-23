@@ -17,10 +17,10 @@ export const Header: React.FC<HeaderProps> = ({
 }) => {
   return (
     <header className="h-14 px-6 border-b border-[#23242a] bg-[#141518] flex items-center justify-between gap-6 shrink-0 select-none">
-      {/* Zone 1: Wordmark #### */}
+      {/* Zone 1: Wordmark */}
       <div className="flex items-center gap-3 shrink-0">
         <a href="/" className="font-mono font-bold text-lg text-white tracking-wider hover:opacity-80 transition-opacity">
-          ####
+          SecureMessenger
         </a>
       </div>
 
@@ -45,7 +45,7 @@ export const Header: React.FC<HeaderProps> = ({
           title="Локальное приложение для ПК: запуск через .exe с интерфейсом через сайт"
         >
           <Terminal className="w-3.5 h-3.5 text-neutral-300" />
-          <span>####.exe</span>
+          <span>SecureMessenger.exe</span>
         </button>
 
         <button

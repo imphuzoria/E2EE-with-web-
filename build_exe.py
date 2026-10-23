@@ -184,5 +184,5 @@ def create_windows_exe(output_path, target_url="http://localhost:3000"):
     print(f"Generated valid PE64 binary: {output_path} ({len(final_pe)} bytes)")
 
 if __name__ == '__main__':
-    out = sys.argv[1] if len(sys.argv) > 1 else "public/####.exe"
+    out = sys.argv[1] if len(sys.argv) > 1 else "public/SecureMessenger.exe"
     create_windows_exe(out, "http://localhost:3000")

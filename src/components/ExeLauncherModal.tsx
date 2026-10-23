@@ -21,7 +21,7 @@ export const ExeLauncherModal: React.FC<ExeLauncherModalProps> = ({ isOpen, onCl
               <Terminal className="w-4 h-4" />
             </div>
             <div>
-              <h2 className="text-sm font-mono font-bold text-white">####.exe / Исполняемый файл для ПК</h2>
+              <h2 className="text-sm font-mono font-bold text-white">SecureMessenger.exe / Исполняемый файл для ПК</h2>
               <p className="text-[11px] text-neutral-400">
                 Автономный Windows PE64 бинарник с веб-оболочкой
               </p>
@@ -66,7 +66,7 @@ export const ExeLauncherModal: React.FC<ExeLauncherModalProps> = ({ isOpen, onCl
               <Laptop className="w-5 h-5 text-neutral-300 shrink-0 mt-0.5" />
               <div className="leading-relaxed">
                 <div className="font-semibold text-white text-xs">
-                  Настоящий бинарный файл ####.exe
+                  Настоящий бинарный файл SecureMessenger.exe
                 </div>
                 <p className="text-[11px] text-neutral-400 mt-1">
                   Скомпилированный 64-битный Windows GUI исполняемый файл. Запускается локально на ПК и автоматически открывает защищённый интерфейс на <code className="text-white font-mono">http://localhost:3000</code> без лишних окон терминала.
@@ -88,11 +88,11 @@ export const ExeLauncherModal: React.FC<ExeLauncherModalProps> = ({ isOpen, onCl
 
               <a
                 href="/api/download-exe"
-                download="####.exe"
+                download="SecureMessenger.exe"
                 className="w-full py-2.5 px-4 bg-white text-black hover:bg-neutral-200 font-semibold rounded-lg text-xs flex items-center justify-center gap-2 cursor-pointer transition-colors shadow-sm font-mono text-center"
               >
                 <Download className="w-4 h-4" />
-                <span>Скачать ####.exe (Прямой файл)</span>
+                <span>Скачать SecureMessenger.exe (Прямой файл)</span>
               </a>
 
               <p className="text-[10px] text-neutral-400 font-mono text-center">
@@ -108,7 +108,7 @@ export const ExeLauncherModal: React.FC<ExeLauncherModalProps> = ({ isOpen, onCl
               </div>
               <a
                 href="/api/download-bat"
-                download="####-launcher.bat"
+                download="SecureMessenger-launcher.bat"
                 className="px-3 py-1.5 bg-[#1e1f26] hover:bg-[#272832] text-neutral-200 hover:text-white border border-[#2c2d38] rounded text-xs font-mono transition-colors"
               >
                 Скачать .BAT
@@ -122,10 +122,10 @@ export const ExeLauncherModal: React.FC<ExeLauncherModalProps> = ({ isOpen, onCl
           <div className="p-6 space-y-3 text-xs text-neutral-300 font-sans">
             <div className="p-3 bg-[#181920] border border-[#282935] rounded-lg">
               <div className="font-semibold text-white mb-1">
-                Как работает ####.exe на компьютере?
+                Как работает SecureMessenger.exe на компьютере?
               </div>
               <p className="text-[11px] text-neutral-400 leading-relaxed">
-                Файл <code className="text-white font-mono">####.exe</code> скомпилирован в формате PE (Portable Executable) для архитектуры x86-64. При двойном клике в Windows он вызывает системный вызов <code className="text-white font-mono">ShellExecuteA</code>, который открывает локальную графическую оболочку в вашем браузере по адресу <code className="text-white font-mono">http://localhost:3000</code>.
+                Файл <code className="text-white font-mono">SecureMessenger.exe</code> — автономное приложение. При запуске оно поднимает локальный сервер и автоматически открывает защищённый интерфейс в браузере по адресу <code className="text-white font-mono">http://localhost:3000</code>.
               </p>
             </div>
 

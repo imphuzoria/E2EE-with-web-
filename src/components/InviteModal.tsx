@@ -90,7 +90,7 @@ export const InviteModal: React.FC<InviteModalProps> = ({
         {/* Header */}
         <div className="px-6 py-4 border-b border-[#222228] flex items-center justify-between bg-[#111114]">
           <div className="flex items-center gap-2">
-            <span className="font-mono font-bold text-sm text-white">#### / приглашение</span>
+            <span className="font-mono font-bold text-sm text-white">SecureMessenger / приглашение</span>
           </div>
           <button
             onClick={onClose}

@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import {
-  deriveKeyFromPassphrase,
+  deriveRoomKey,
   encryptText,
   decryptText,
   encryptBuffer,
@@ -9,6 +9,8 @@ import {
   exportPublicKey,
   arrayBufferToBase64,
   base64ToArrayBuffer,
+  generatePassphrase,
+  randomId,
 } from './crypto/cipher';
 import { ChatMessage, Peer, RoomConfig } from './types/chat';
 import { Header } from './components/Header';
@@ -21,59 +23,91 @@ import { NewRoomModal } from './components/NewRoomModal';
 import { InstallModal } from './components/InstallModal';
 import { playMessageSound, playSendSound, playPurgeSound } from './utils/sound';
 
+const ROOMS_STORAGE_KEY = 'sm_rooms_v1';
+const DEFAULT_ROOM_KEY_STORAGE = 'sm_default_room_key_v1';
+
+function createDefaultRoom(): RoomConfig {
+  let passphrase = '';
+  try {
+    passphrase = localStorage.getItem(DEFAULT_ROOM_KEY_STORAGE) || '';
+  } catch {
+    passphrase = '';
+  }
+  if (!passphrase) {
+    passphrase = generatePassphrase(32);
+    try {
+      localStorage.setItem(DEFAULT_ROOM_KEY_STORAGE, passphrase);
+    } catch {
+      /* storage unavailable */
+    }
+  }
+  return { id: 'general', name: 'general', passphrase };
+}
+
+function loadInitialRooms(): RoomConfig[] {
+  try {
+    const raw = localStorage.getItem(ROOMS_STORAGE_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed) && parsed.length > 0) {
+        return parsed.filter((r) => r && typeof r.id === 'string' && typeof r.passphrase === 'string');
+      }
+    }
+  } catch {
+    /* fall through */
+  }
+
+  const base = [createDefaultRoom()];
+
+  // Apply invite from the URL hash, if any.
+  const params = new URLSearchParams(window.location.hash.slice(1));
+  const hashRoom = params.get('room');
+  const hashKey = params.get('key');
+  if (hashRoom && hashKey) {
+    base.unshift({ id: hashRoom, name: hashRoom, passphrase: hashKey });
+  }
+  return base;
+}
+
 export default function App() {
   // User identity
   const [peerId] = useState<string>(() => {
-    const saved = sessionStorage.getItem('ch_peer_id');
+    let saved = '';
+    try {
+      saved = sessionStorage.getItem('sm_peer_id') || '';
+    } catch {
+      saved = '';
+    }
     if (saved) return saved;
-    const newId = `node_${Math.random().toString(36).substring(2, 9)}`;
-    sessionStorage.setItem('ch_peer_id', newId);
+    const newId = randomId('node');
+    try {
+      sessionStorage.setItem('sm_peer_id', newId);
+    } catch {
+      /* ignore */
+    }
     return newId;
   });
 
   const [userName, setUserName] = useState<string>(() => {
-    return sessionStorage.getItem('ch_user_name') || `user_${Math.floor(1000 + Math.random() * 9000)}`;
+    try {
+      return sessionStorage.getItem('sm_user_name') || `user_${Math.floor(1000 + Math.random() * 9000)}`;
+    } catch {
+      return `user_${Math.floor(1000 + Math.random() * 9000)}`;
+    }
   });
 
   const [myPublicKeyBase64, setMyPublicKeyBase64] = useState<string>('');
   const keyPairRef = useRef<CryptoKeyPair | null>(null);
 
   // Active channels
-  const [rooms, setRooms] = useState<RoomConfig[]>(() => {
-    const hash = window.location.hash.slice(1);
-    const params = new URLSearchParams(hash);
-    const hashRoom = params.get('room');
-    const hashKey = params.get('key');
-
-    const defaultRooms: RoomConfig[] = [
-      {
-        id: 'secure-vault',
-        name: 'vault',
-        passphrase: 'CipherHaven-Master-Key-2026',
-      },
-      {
-        id: 'ops',
-        name: 'ops',
-        passphrase: 'Alpha-Ops-Encrypted-Key-991',
-      },
-    ];
-
-    if (hashRoom && hashKey) {
-      const customRoom: RoomConfig = {
-        id: hashRoom,
-        name: hashRoom,
-        passphrase: hashKey,
-      };
-      return [customRoom, ...defaultRooms];
-    }
-
-    return defaultRooms;
-  });
+  const [rooms, setRooms] = useState<RoomConfig[]>(() => loadInitialRooms());
 
   const [currentRoomId, setCurrentRoomId] = useState<string>(() => {
-    const hash = window.location.hash.slice(1);
-    const params = new URLSearchParams(hash);
-    return params.get('room') || 'secure-vault';
+    const params = new URLSearchParams(window.location.hash.slice(1));
+    const hashRoom = params.get('room');
+    if (hashRoom) return hashRoom;
+    const initial = loadInitialRooms();
+    return initial[0]?.id || 'general';
   });
 
   const [messagesByRoom, setMessagesByRoom] = useState<Record<string, ChatMessage[]>>({});
@@ -93,6 +127,33 @@ export default function App() {
   const [deferredPrompt, setDeferredPrompt] = useState<any>(null);
 
   const eventSourceRef = useRef<EventSource | null>(null);
+
+  // Cache of derived AES keys per room (avoids re-running PBKDF2 on every message).
+  const keyCacheRef = useRef<Map<string, CryptoKey>>(new Map());
+
+  // Mute state mirrored in a ref so toggling it does not reconnect the SSE stream.
+  const isMutedRef = useRef(isMuted);
+  useEffect(() => {
+    isMutedRef.current = isMuted;
+  }, [isMuted]);
+
+  // Persist rooms so joined channels survive a refresh.
+  useEffect(() => {
+    try {
+      localStorage.setItem(ROOMS_STORAGE_KEY, JSON.stringify(rooms));
+    } catch {
+      /* ignore */
+    }
+  }, [rooms]);
+
+  const getRoomKey = useCallback(async (room: RoomConfig): Promise<CryptoKey> => {
+    const cacheKey = `${room.id}|${room.passphrase}`;
+    const cached = keyCacheRef.current.get(cacheKey);
+    if (cached) return cached;
+    const key = await deriveRoomKey(room.passphrase, room.id);
+    keyCacheRef.current.set(cacheKey, key);
+    return key;
+  }, []);
 
   // Initialize ECDH keys on start
   useEffect(() => {
@@ -120,29 +181,13 @@ export default function App() {
     return () => window.removeEventListener('beforeinstallprompt', handleBeforeInstall);
   }, []);
 
-  // Keyboard shortcuts
-  useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') {
-        e.preventDefault();
-        setIsNewRoomOpen((prev) => !prev);
-      }
-      if ((e.ctrlKey || e.metaKey) && e.shiftKey && (e.key.toLowerCase() === 'p' || e.key.toLowerCase() === 'з')) {
-        e.preventDefault();
-        handlePanicPurge();
-      }
-    };
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  }, []);
-
   const currentRoom = rooms.find((r) => r.id === currentRoomId) || rooms[0] || null;
 
   // Decrypt incoming message
   const decryptIncomingMessage = useCallback(
-    async (rawMsg: any, passphrase: string): Promise<ChatMessage> => {
+    async (rawMsg: any, room: RoomConfig): Promise<ChatMessage> => {
       try {
-        const key = await deriveKeyFromPassphrase(passphrase);
+        const key = await getRoomKey(room);
         let decryptedText: string | undefined;
 
         if (rawMsg.ciphertext && rawMsg.iv) {
@@ -153,13 +198,20 @@ export default function App() {
         if (fileMeta && fileMeta.fileId) {
           let decryptedName = 'file';
           try {
-            decryptedName = await decryptText(fileMeta.encryptedFilename, rawMsg.iv, key);
+            // Filename is stored as "iv:ciphertext" so it decrypts independently
+            // of the message-level IV.
+            const parts = String(fileMeta.encryptedFilename || '').split(':');
+            if (parts.length === 2) {
+              decryptedName = await decryptText(parts[1], parts[0], key);
+            } else if (fileMeta.encryptedFilename) {
+              decryptedName = await decryptText(fileMeta.encryptedFilename, rawMsg.iv, key);
+            }
           } catch {
             decryptedName = 'file';
           }
 
           try {
-            const resp = await fetch(`/api/rooms/${rawMsg.roomId}/files/${fileMeta.fileId}`);
+            const resp = await fetch(`/api/rooms/${encodeURIComponent(rawMsg.roomId)}/files/${encodeURIComponent(fileMeta.fileId)}`);
             if (resp.ok) {
               const encryptedBuf = await resp.arrayBuffer();
               const ivBytes = new Uint8Array(base64ToArrayBuffer(rawMsg.iv));
@@ -193,7 +245,7 @@ export default function App() {
         };
       }
     },
-    []
+    [getRoomKey]
   );
 
   // SSE Stream
@@ -219,7 +271,7 @@ export default function App() {
 
         const decryptedMessages: ChatMessage[] = [];
         for (const rawMsg of data.messages || []) {
-          const dec = await decryptIncomingMessage(rawMsg, currentRoom.passphrase);
+          const dec = await decryptIncomingMessage(rawMsg, currentRoom);
           decryptedMessages.push(dec);
         }
 
@@ -235,7 +287,7 @@ export default function App() {
     es.addEventListener('message', async (e: MessageEvent) => {
       try {
         const rawMsg = JSON.parse(e.data);
-        const dec = await decryptIncomingMessage(rawMsg, currentRoom.passphrase);
+        const dec = await decryptIncomingMessage(rawMsg, currentRoom);
 
         setMessagesByRoom((prev) => {
           const currentList = prev[currentRoom.id] || [];
@@ -246,7 +298,7 @@ export default function App() {
           };
         });
 
-        if (rawMsg.senderId !== peerId && !isMuted) {
+        if (rawMsg.senderId !== peerId && !isMutedRef.current) {
           playMessageSound();
         }
       } catch (err) {
@@ -281,22 +333,43 @@ export default function App() {
       playPurgeSound();
     });
 
+    es.addEventListener('error', () => {
+      // EventSource reconnects automatically; nothing to do here.
+    });
+
     return () => {
       es.close();
     };
-  }, [currentRoom?.id, currentRoom?.passphrase, peerId, userName, myPublicKeyBase64, decryptIncomingMessage, isMuted]);
+  }, [currentRoom?.id, currentRoom?.passphrase, peerId, userName, myPublicKeyBase64, decryptIncomingMessage]);
 
-  // Send Encrypted Message (timer removed per user request)
+  // Keyboard shortcuts
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') {
+        e.preventDefault();
+        setIsNewRoomOpen((prev) => !prev);
+      }
+      if ((e.ctrlKey || e.metaKey) && e.shiftKey && (e.key.toLowerCase() === 'p' || e.key.toLowerCase() === 'з')) {
+        e.preventDefault();
+        handlePanicPurge();
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Send Encrypted Message
   const handleSendMessage = async (text: string) => {
     if (!currentRoom) return;
     setIsEncrypting(true);
 
     try {
-      const key = await deriveKeyFromPassphrase(currentRoom.passphrase);
+      const key = await getRoomKey(currentRoom);
       const { ciphertext, iv } = await encryptText(text, key);
 
       const payload = {
-        id: `msg_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`,
+        id: randomId('msg'),
         senderId: peerId,
         senderName: userName,
         senderPublicKey: myPublicKeyBase64,
@@ -305,13 +378,13 @@ export default function App() {
         type: 'text',
       };
 
-      const resp = await fetch(`/api/rooms/${currentRoom.id}/messages`, {
+      const resp = await fetch(`/api/rooms/${encodeURIComponent(currentRoom.id)}/messages`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
       });
 
-      if (resp.ok && !isMuted) {
+      if (resp.ok && !isMutedRef.current) {
         playSendSound();
       }
     } catch (err) {
@@ -324,18 +397,24 @@ export default function App() {
   // Send Encrypted File
   const handleSendFile = async (file: File) => {
     if (!currentRoom) return;
+    if (file.size > 50 * 1024 * 1024) {
+      alert('Файл слишком большой (максимум 50 МБ)');
+      return;
+    }
     setIsEncrypting(true);
 
     try {
-      const key = await deriveKeyFromPassphrase(currentRoom.passphrase);
+      const key = await getRoomKey(currentRoom);
       const fileBuffer = await file.arrayBuffer();
 
       const { encryptedBuffer, iv } = await encryptBuffer(fileBuffer, key);
       const ivBase64 = arrayBufferToBase64(iv);
       const encFilename = await encryptText(file.name, key);
+      // Store both IV and ciphertext so the filename decrypts independently.
+      const encryptedFilename = `${encFilename.iv}:${encFilename.ciphertext}`;
 
-      const fileId = `file_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
-      const uploadResp = await fetch(`/api/rooms/${currentRoom.id}/files`, {
+      const fileId = randomId('file');
+      const uploadResp = await fetch(`/api/rooms/${encodeURIComponent(currentRoom.id)}/files`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/octet-stream',
@@ -349,7 +428,7 @@ export default function App() {
       const descPayload = await encryptText(`Файл: ${file.name}`, key);
 
       const payload = {
-        id: `msg_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`,
+        id: randomId('msg'),
         senderId: peerId,
         senderName: userName,
         senderPublicKey: myPublicKeyBase64,
@@ -358,19 +437,19 @@ export default function App() {
         type: 'file',
         fileMeta: {
           fileId,
-          encryptedFilename: encFilename.ciphertext,
+          encryptedFilename,
           size: file.size,
           mimeType: file.type || 'application/octet-stream',
         },
       };
 
-      await fetch(`/api/rooms/${currentRoom.id}/messages`, {
+      await fetch(`/api/rooms/${encodeURIComponent(currentRoom.id)}/messages`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
       });
 
-      if (!isMuted) playSendSound();
+      if (!isMutedRef.current) playSendSound();
     } catch (err) {
       console.error('Failed to encrypt/send file:', err);
     } finally {
@@ -384,15 +463,16 @@ export default function App() {
     setIsEncrypting(true);
 
     try {
-      const key = await deriveKeyFromPassphrase(currentRoom.passphrase);
+      const key = await getRoomKey(currentRoom);
       const audioBuffer = await audioBlob.arrayBuffer();
 
       const { encryptedBuffer, iv } = await encryptBuffer(audioBuffer, key);
       const ivBase64 = arrayBufferToBase64(iv);
       const encFilename = await encryptText(`Аудио (${durationSec}с)`, key);
+      const encryptedFilename = `${encFilename.iv}:${encFilename.ciphertext}`;
 
-      const fileId = `voice_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
-      await fetch(`/api/rooms/${currentRoom.id}/files`, {
+      const fileId = randomId('voice');
+      await fetch(`/api/rooms/${encodeURIComponent(currentRoom.id)}/files`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/octet-stream',
@@ -404,7 +484,7 @@ export default function App() {
       const descPayload = await encryptText(`Голосовое (${durationSec}с)`, key);
 
       const payload = {
-        id: `msg_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`,
+        id: randomId('msg'),
         senderId: peerId,
         senderName: userName,
         senderPublicKey: myPublicKeyBase64,
@@ -413,20 +493,20 @@ export default function App() {
         type: 'file',
         fileMeta: {
           fileId,
-          encryptedFilename: encFilename.ciphertext,
+          encryptedFilename,
           size: audioBlob.size,
           mimeType: 'audio/webm',
           isAudioVoice: true,
         },
       };
 
-      await fetch(`/api/rooms/${currentRoom.id}/messages`, {
+      await fetch(`/api/rooms/${encodeURIComponent(currentRoom.id)}/messages`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
       });
 
-      if (!isMuted) playSendSound();
+      if (!isMutedRef.current) playSendSound();
     } catch (err) {
       console.error('Failed to send voice note:', err);
     } finally {
@@ -437,28 +517,32 @@ export default function App() {
   const handleClearRoomMessages = async () => {
     if (!currentRoom) return;
     try {
-      await fetch(`/api/rooms/${currentRoom.id}/messages`, { method: 'DELETE' });
+      await fetch(`/api/rooms/${encodeURIComponent(currentRoom.id)}/messages`, { method: 'DELETE' });
     } catch (err) {}
   };
 
   const handlePanicPurge = () => {
     playPurgeSound();
-    sessionStorage.clear();
-    localStorage.clear();
+    try {
+      sessionStorage.clear();
+      localStorage.removeItem(ROOMS_STORAGE_KEY);
+      localStorage.removeItem(DEFAULT_ROOM_KEY_STORAGE);
+    } catch {
+      /* ignore */
+    }
     keyPairRef.current = null;
+    keyCacheRef.current.clear();
     if (eventSourceRef.current) {
       eventSourceRef.current.close();
     }
     setMessagesByRoom({});
-    setRooms([
-      {
-        id: 'secure-vault',
-        name: 'vault',
-        passphrase: 'CipherHaven-Master-Key-2026',
-      },
-    ]);
-    setCurrentRoomId('secure-vault');
+    setPeers([]);
+    const fresh = createDefaultRoom();
+    setRooms([fresh]);
+    setCurrentRoomId(fresh.id);
     setIsSettingsOpen(false);
+    // Reload so the identity and keys are regenerated from scratch.
+    window.location.reload();
   };
 
   const handleInstallClick = async () => {
@@ -474,6 +558,7 @@ export default function App() {
 
   const handleUpdateRoomPassphrase = (newPassphrase: string) => {
     if (!currentRoom) return;
+    keyCacheRef.current.delete(`${currentRoom.id}|${currentRoom.passphrase}`);
     setRooms((prev) =>
       prev.map((r) => (r.id === currentRoom.id ? { ...r, passphrase: newPassphrase } : r))
     );
@@ -483,7 +568,9 @@ export default function App() {
   const handleJoinByCode = (code: string) => {
     try {
       const decoded = decodeURIComponent(window.atob(code.trim()));
-      const [roomId, passphrase] = decoded.split(':');
+      const idx = decoded.indexOf(':');
+      const roomId = decoded.slice(0, idx);
+      const passphrase = decoded.slice(idx + 1);
       if (roomId && passphrase) {
         setRooms((prev) => {
           const exists = prev.some((r) => r.id === roomId);
@@ -525,7 +612,11 @@ export default function App() {
           userName={userName}
           onChangeUserName={(name) => {
             setUserName(name);
-            sessionStorage.setItem('ch_user_name', name);
+            try {
+              sessionStorage.setItem('sm_user_name', name);
+            } catch {
+              /* ignore */
+            }
           }}
           peerId={peerId}
           peers={peers}
